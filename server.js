@@ -1,15 +1,17 @@
-// server.js — Local Embedding Service with OpenAI-compatible response
+// server.js — Local Embedding Service (OpenAI-compatible, padded to 1536)
 // Node 18+, ESM ("type": "module" in package.json)
 import express from "express";
 import { pipeline } from "@xenova/transformers";
 
 // ── Config ─────────────────────────────────────────────────────────────
 const PORT = Number(process.env.PORT || 8788);
-const MODEL_ID = process.env.EMBED_MODEL_ID || "Xenova/bge-small-en-v1.5"; // 384-dim, fast English
+const MODEL_ID = process.env.EMBED_MODEL_ID || "Xenova/bge-small-en-v1.5"; // 384-dim English
 const ENABLE_CORS = true;
-const NORMALIZE = true; // L2 normalize vectors (recommended for cosine)
+const NORMALIZE = true;                   // L2-normalize vectors (recommended for cosine)
+const TARGET_DIM = Number(process.env.TARGET_DIM || 1536); // pad/truncate to DB size
+const RESPONSE_MODEL_LABEL = process.env.RESPONSE_MODEL || "text-embedding-3-small";
+// ───────────────────────────────────────────────────────────────────────
 
-// ── App setup ──────────────────────────────────────────────────────────
 const app = express();
 app.use(express.json({ limit: "16mb" }));
 if (ENABLE_CORS) {
@@ -22,13 +24,13 @@ if (ENABLE_CORS) {
   });
 }
 
-// ── Load model once (first call warms up) ──────────────────────────────
+// Load model once (first call warms up)
 const embedder = await pipeline("feature-extraction", MODEL_ID, { quantized: true });
 
-// Mean-pool last hidden state → single vector
+// Mean-pool last hidden state → single vector, also return token count
 function meanPoolTensor(t) {
   const [/*batch*/, tokens, dim] = t.dims; // [1, T, D]
-  const data = t.data; // Float32Array length T*D
+  const data = t.data;                      // Float32Array length T*D
   const out = new Array(dim).fill(0);
   for (let i = 0; i < tokens * dim; i++) out[i % dim] += data[i];
   for (let d = 0; d < dim; d++) out[d] /= tokens;
@@ -39,13 +41,18 @@ function l2norm(v) {
   const n = Math.sqrt(s) || 1;
   return v.map(x => x / n);
 }
+function adjustDim(vec, target = TARGET_DIM) {
+  if (vec.length === target) return vec;
+  if (vec.length < target) return vec.concat(Array(target - vec.length).fill(0));
+  return vec.slice(0, target);
+}
 
 // Health
 app.get("/health", async (_req, res) => {
   try {
-    const t = await embedder("ok"); // no pooling → [1,T,D]
-    const { vec } = meanPoolTensor(t);
-    res.json({ ok: true, model: MODEL_ID, dim: vec.length });
+    const raw = await embedder("ok");
+    const { vec } = meanPoolTensor(raw);
+    res.json({ ok: true, model: MODEL_ID, base_dim: vec.length, target_dim: TARGET_DIM });
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
@@ -53,24 +60,15 @@ app.get("/health", async (_req, res) => {
 
 /**
  * POST /embed
- * Body:
- *   { input: string | string[],
- *     model?: string }  // returned verbatim in response for compatibility
- *
- * Response (OpenAI-compatible):
- * {
- *   "object":"list",
- *   "data":[{"object":"embedding","index":0,"embedding":[...]}],
- *   "model":"text-embedding-3-small",
- *   "usage":{"prompt_tokens":N,"total_tokens":N}
- * }
+ * Body: { input: string | string[], model?: string }
+ * Returns the OpenAI-compatible shape, with embeddings padded/truncated to TARGET_DIM.
  */
 app.post("/embed", async (req, res) => {
   try {
     const input = req.body?.input;
-    const responseModel = req.body?.model || "text-embedding-3-small"; // just a label for clients
+    const responseModel = req.body?.model || RESPONSE_MODEL_LABEL;
 
-    // Normalize to array and avoid empty strings
+    // Normalize to array; avoid empty strings
     const items = Array.isArray(input) ? input : [String(input ?? " ")];
     const texts = items.map(t => {
       const s = String(t ?? "").trim();
@@ -81,9 +79,10 @@ app.post("/embed", async (req, res) => {
     let totalTokens = 0;
 
     for (let i = 0; i < texts.length; i++) {
-      const raw = await embedder(texts[i]); // no pooling → access token count
+      const raw = await embedder(texts[i]);      // [1, T, D]
       const { vec, tokens } = meanPoolTensor(raw);
-      const emb = NORMALIZE ? l2norm(vec) : vec;
+      let emb = NORMALIZE ? l2norm(vec) : vec;   // normalize (optional)
+      emb = adjustDim(emb, TARGET_DIM);          // pad/truncate to 1536 (or env)
       totalTokens += tokens;
 
       data.push({
@@ -93,11 +92,11 @@ app.post("/embed", async (req, res) => {
       });
     }
 
-    // OpenAI-compatible shape
+    // Exact OpenAI shape
     return res.json({
       object: "list",
       data,
-      model: responseModel,
+      model: responseModel,                      // label only; client-friendly
       usage: {
         prompt_tokens: totalTokens,
         total_tokens: totalTokens,
@@ -108,7 +107,7 @@ app.post("/embed", async (req, res) => {
     return res.status(500).json({
       object: "list",
       data: [],
-      model: req.body?.model || "text-embedding-3-small",
+      model: req.body?.model || RESPONSE_MODEL_LABEL,
       usage: { prompt_tokens: 0, total_tokens: 0 },
       error: String(e?.message || e),
     });
@@ -116,5 +115,5 @@ app.post("/embed", async (req, res) => {
 });
 
 app.listen(PORT, () =>
-  console.log(`Local embeddings on :${PORT}  (model=${MODEL_ID}, normalize=${NORMALIZE})`)
+  console.log(`Local embeddings on :${PORT} (model=${MODEL_ID}, target_dim=${TARGET_DIM}, normalize=${NORMALIZE})`)
 );
