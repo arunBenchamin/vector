@@ -37,4 +37,4 @@ app.post("/embed", async (req, res) => {
   }
 });
 
-app.listen(7071, () => console.log("Local embeddings on :7071"));
+app.listen(8788, () => console.log("Local embeddings on :8788"));
