@@ -1,0 +1,52 @@
+# Node dependencies
+node_modules/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Logs & diagnostics
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage / tests
+coverage/
+.nyc_output/
+
+# Build artifacts / caches
+dist/
+build/
+.tmp/
+.tmp*/
+.cache/
+.parcel-cache/
+.esbuild/
+.turbo/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.iml
+
+# If you cache models inside the repo (optional)
+# (e.g., when using @xenova/transformers with a local cache path)
+models/
+huggingface/
+**/onnx-cache/
